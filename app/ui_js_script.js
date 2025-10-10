@@ -24,6 +24,7 @@ let people = [];
         let selectedPhotos = new Set();
         let lastSelectedIndex = -1;
         let nameConflictData = null;
+        let virtualGrid = null;
         let showFaceTagsPreview = true;
 
         const personColors = [
@@ -31,6 +32,32 @@ let people = [];
             '#30cfd0', '#a8edea', '#fed6e3', '#c1dfc4', '#d299c2',
             '#fda085', '#f6d365', '#96e6a1', '#764ba2', '#f79d00'
         ];
+
+        function initVirtualGrid() {
+            const container = document.querySelector('.photo-grid-container');
+            const gridSize = parseInt(document.getElementById('sizeSlider').value) || 180;
+            
+            if (virtualGrid) {
+                virtualGrid.destroy();
+            }
+            
+            virtualGrid = new VirtualPhotoGrid(container, {
+                itemHeight: gridSize,
+                itemsPerRow: Math.floor((container.clientWidth - 56) / (gridSize + 16)),
+                gap: 16,
+                overscan: 2
+            });
+        }
+
+        document.getElementById('sizeSlider').addEventListener('input', (e) => {
+            const size = e.target.value;
+            pywebview.api.set_grid_size(parseInt(size));
+            
+            if (virtualGrid && currentPerson) {
+                initVirtualGrid();
+                loadPhotos(currentPerson.clustering_id, currentPerson.id, true);
+            }
+        });
 
 
         function showRenameDialog(clusteringId, personId, currentName) {
@@ -137,18 +164,18 @@ let people = [];
         }
 
         function selectPhotoRange(startIndex, endIndex) {
-            const photoItems = Array.from(document.querySelectorAll('.photo-item'));
             const start = Math.min(startIndex, endIndex);
             const end = Math.max(startIndex, endIndex);
             
-            for (let i = start; i <= end && i < photoItems.length; i++) {
-                const item = photoItems[i];
-                const faceId = parseInt(item.getAttribute('data-face-id'));
-                selectedPhotos.add(faceId);
-                item.classList.add('selected');
+            for (let i = start; i <= end && i < lightboxPhotos.length; i++) {
+                const photo = lightboxPhotos[i];
+                selectedPhotos.add(photo.face_id);
             }
+            
+            virtualGrid.render();
             updateSelectionInfo();
         }
+
 
         function positionMenu(menu, button) {
             const buttonRect = button.getBoundingClientRect();
@@ -433,13 +460,9 @@ let people = [];
                 });
             });
         }
-
         async function selectPerson(person) {
             currentPerson = person;
-            currentPage = 1;
-            hasMorePhotos = true;
             lightboxPhotos = [];
-            isLoadingMore = false;
             clearSelection();
             
             document.getElementById('contentTitle').textContent = `${person.name}'s Photos`;
@@ -459,265 +482,33 @@ let people = [];
             await loadPhotos(person.clustering_id, person.id, true);
         }
 
-
         async function loadPhotos(clustering_id, person_id, resetGrid = false) {
-            const photoGrid = document.getElementById('photoGrid');
+            if (!virtualGrid) {
+                initVirtualGrid();
+            }
             
             if (resetGrid) {
-                photoGrid.innerHTML = '<div style="color: #a0a0a0; padding: 20px;">Loading photos...</div>';
-                currentPage = 1;
-                hasMorePhotos = true;
                 lightboxPhotos = [];
-                isLoadingMore = false;
                 clearSelection();
-            }
-            
-            if (isLoadingMore) {
-                console.log('Already loading, skipping...');
-                return;
-            }
-            
-            if (!hasMorePhotos) {
-                console.log('No more photos to load');
-                return;
-            }
-            
-            isLoadingMore = true;
-            console.log(`Loading photos: page ${currentPage}, person ${person_id}`);
-            
-            const existingIndicator = document.getElementById('loading-indicator');
-            if (existingIndicator) {
-                existingIndicator.textContent = 'Loading more photos...';
+                virtualGrid.setPhotos([]);
             }
             
             try {
-                const result = await pywebview.api.get_photos(clustering_id, person_id, currentPage, PAGE_SIZE);
-                
-                console.log(`Loaded page ${currentPage}:`, {
-                    photos: result.photos.length,
-                    total: result.total_count,
-                    has_more: result.has_more
-                });
-                
-                if (resetGrid) {
-                    photoGrid.innerHTML = '';
-                } else {
-                    const oldIndicator = document.getElementById('loading-indicator');
-                    if (oldIndicator) {
-                        oldIndicator.remove();
-                    }
-                }
+                const result = await pywebview.api.get_photos(clustering_id, person_id, 1, 999999);
                 
                 if (!result || typeof result !== 'object') {
                     throw new Error('Invalid response from get_photos');
                 }
                 
-                if (result.total_count === 0) {
-                    photoGrid.innerHTML = '<div style="color: #a0a0a0; padding: 20px;">No photos found</div>';
-                    hasMorePhotos = false;
-                    isLoadingMore = false;
-                    return;
-                }
-                
-                hasMorePhotos = result.has_more;
-                
-                const startIndex = lightboxPhotos.length;
-                lightboxPhotos = lightboxPhotos.concat(result.photos);
-                
-                result.photos.forEach((photo, relativeIndex) => {
-                    const absoluteIndex = startIndex + relativeIndex;
-                    
-                    const photoItem = document.createElement('div');
-                    photoItem.className = 'photo-item';
-                    photoItem.setAttribute('data-face-id', photo.face_id);
-                    photoItem.setAttribute('data-index', absoluteIndex);
-                    
-                    const hiddenOverlay = photo.is_hidden ? '<div class="hidden-overlay"></div>' : '';
-                    
-                    photoItem.innerHTML = `
-                        <img src="${photo.thumbnail}" class="photo-placeholder" style="width: 100%; height: 100%; object-fit: cover;">
-                        ${hiddenOverlay}
-                        <button class="kebab-menu">
-                            <span class="kebab-dot"></span>
-                            <span class="kebab-dot"></span>
-                            <span class="kebab-dot"></span>
-                        </button>
-                    `;
-                    
-                    const contextMenu = document.createElement('div');
-                    contextMenu.className = 'context-menu';
-                    
-                    document.body.appendChild(contextMenu);
-                    
-                    photoItem.addEventListener('click', (e) => {
-                        if (e.target.closest('.kebab-menu')) {
-                            return;
-                        }
-                        
-                        const photoIndex = parseInt(photoItem.getAttribute('data-index'));
-                        const faceId = photo.face_id;
-                        
-                        if (e.ctrlKey || e.metaKey) {
-                            togglePhotoSelection(faceId, photoIndex, photoItem);
-                        } else if (e.shiftKey) {
-                            if (lastSelectedIndex >= 0) {
-                                selectPhotoRange(lastSelectedIndex, photoIndex);
-                            } else {
-                                selectedPhotos.add(faceId);
-                                photoItem.classList.add('selected');
-                                lastSelectedIndex = photoIndex;
-                                updateSelectionInfo();
-                            }
-                        } else {
-                            if (selectedPhotos.size === 0) {
-                                openLightbox(photoIndex);
-                            } else {
-                                clearSelection();
-                            }
-                        }
-                    });
-                    
-                    photoItem.addEventListener('dblclick', (e) => {
-                        if (!e.target.closest('.kebab-menu')) {
-                            pywebview.api.open_photo(photo.path);
-                        }
-                    });
-                    
-                    photoGrid.appendChild(photoItem);
-
-                    const kebabBtn = photoItem.querySelector('.kebab-menu');
-                    kebabBtn.addEventListener('click', (e) => {
-                        e.stopPropagation();
-                        closeAllMenus();
-                        
-                        currentPhotoContext = {
-                            person_name: currentPerson.name,
-                            face_id: photo.face_id,
-                            path: photo.path,
-                            is_hidden: photo.is_hidden
-                        };
-                        
-                        const hasSelection = selectedPhotos.size > 0;
-                        const isPhotoSelected = selectedPhotos.has(photo.face_id);
-                        
-                        if (hasSelection) {
-                            if (!isPhotoSelected) {
-                                selectedPhotos.add(photo.face_id);
-                                photoItem.classList.add('selected');
-                                updateSelectionInfo();
-                            }
-                            
-                            if (photo.is_hidden) {
-                                contextMenu.innerHTML = `
-                                    <div class="context-menu-item" data-action="transfer-tag">Remove/Transfer Tag (${selectedPhotos.size} photos)</div>
-                                    <div class="context-menu-item" data-action="unhide-photo">Unhide photo (${selectedPhotos.size} photos)</div>
-                                `;
-                            } else {
-                                contextMenu.innerHTML = `
-                                    <div class="context-menu-item" data-action="transfer-tag">Remove/Transfer Tag (${selectedPhotos.size} photos)</div>
-                                    <div class="context-menu-item" data-action="hide-photo">Hide photo (${selectedPhotos.size} photos)</div>
-                                `;
-                            }
-                        } else {
-                            if (photo.is_hidden) {
-                                contextMenu.innerHTML = `
-                                    <div class="context-menu-item" data-action="make-primary">Make primary photo</div>
-                                    <div class="context-menu-item" data-action="unhide-photo">Unhide photo</div>
-                                `;
-                            } else {
-                                contextMenu.innerHTML = `
-                                    <div class="context-menu-item" data-action="make-primary">Make primary photo</div>
-                                    <div class="context-menu-item" data-action="transfer-tag">Remove/Transfer Tag</div>
-                                    <div class="context-menu-item" data-action="hide-photo">Hide photo</div>
-                                `;
-                            }
-                        }
-                        
-                        contextMenu.classList.add('show');
-                        photoItem.classList.add('menu-active');
-                        activeMenu = { element: contextMenu, parent: photoItem };
-                        positionMenu(contextMenu, kebabBtn);
-                    });
-
-                    kebabBtn.addEventListener('mouseenter', () => {
-                        if (menuCloseTimeout) {
-                            clearTimeout(menuCloseTimeout);
-                            menuCloseTimeout = null;
-                        }
-                    });
-
-                    kebabBtn.addEventListener('mouseleave', () => {
-                        menuCloseTimeout = setTimeout(() => {
-                            closeAllMenus();
-                        }, 200);
-                    });
-
-                    contextMenu.addEventListener('click', (e) => {
-                        const menuItem = e.target.closest('.context-menu-item');
-                        if (menuItem) {
-                            const action = menuItem.getAttribute('data-action');
-                            if (action === 'make-primary') {
-                                makePrimaryPhoto();
-                            } else if (action === 'hide-photo') {
-                                hidePhotos();
-                            } else if (action === 'unhide-photo') {
-                                unhidePhotos();
-                            } else if (action === 'transfer-tag') {
-                                openTransferDialog();
-                            }
-                        }
-                    });
-
-                    contextMenu.addEventListener('mouseenter', () => {
-                        if (menuCloseTimeout) {
-                            clearTimeout(menuCloseTimeout);
-                            menuCloseTimeout = null;
-                        }
-                    });
-
-                    contextMenu.addEventListener('mouseleave', () => {
-                        menuCloseTimeout = setTimeout(() => {
-                            closeAllMenus();
-                        }, 200);
-                    });
-                });
-                
-                currentPage++;
-                
-                if (hasMorePhotos) {
-                    const loadingIndicator = document.createElement('div');
-                    loadingIndicator.id = 'loading-indicator';
-                    loadingIndicator.style.cssText = 'grid-column: 1 / -1; text-align: center; padding: 20px; color: #3b82f6; font-size: 13px; font-weight: 500;';
-                    
-                    if (result.total_count > 1000) {
-                        loadingIndicator.textContent = `Loaded ${lightboxPhotos.length} of ${result.total_count} photos`;
-                    } else {
-                        loadingIndicator.textContent = `${lightboxPhotos.length} of ${result.total_count} photos loaded`;
-                    }
-                    
-                    photoGrid.appendChild(loadingIndicator);
-                } else {
-                    console.log('All photos loaded');
-                    const finalIndicator = document.createElement('div');
-                    finalIndicator.style.cssText = 'grid-column: 1 / -1; text-align: center; padding: 20px; color: #a0a0a0; font-size: 13px;';
-                    finalIndicator.textContent = `All ${result.total_count} photos loaded`;
-                    photoGrid.appendChild(finalIndicator);
-                }
+                lightboxPhotos = result.photos || [];
+                virtualGrid.setPhotos(lightboxPhotos);
                 
             } catch (error) {
                 console.error('Error loading photos:', error);
                 addLogEntry('ERROR loading photos: ' + error.toString());
-                
-                if (resetGrid) {
-                    photoGrid.innerHTML = `<div style="color: #ff6b6b; padding: 20px;">Error loading photos: ${error.toString()}</div>`;
-                }
-                
-                hasMorePhotos = false;
-            } finally {
-                isLoadingMore = false;
-                console.log(`Load complete. isLoadingMore=${isLoadingMore}, hasMorePhotos=${hasMorePhotos}`);
             }
         }
+
         
         function openLightbox(index) {
             lightboxCurrentIndex = index;
@@ -1037,14 +828,10 @@ let people = [];
 
         async function reloadCurrentPhotos() {
             if (currentPerson) {
-                currentPage = 1;
-                hasMorePhotos = true;
-                lightboxPhotos = [];
-                isLoadingMore = false;
-                clearSelection();
                 await loadPhotos(currentPerson.clustering_id, currentPerson.id, true);
             }
         }
+
 
         function updateStatusMessage(message) {
             document.getElementById('progressText').textContent = message;
@@ -1286,7 +1073,7 @@ let people = [];
                 
                 await loadAllSettings();
                 
-                checkNoFolders();
+                initVirtualGrid();
                 
                 document.getElementById('progressSection').style.display = 'flex';
                 
@@ -1415,12 +1202,12 @@ let people = [];
             }
         });
 
-        document.getElementById('sizeSlider').addEventListener('input', (e) => {
-            const size = e.target.value;
-            document.getElementById('photoGrid').style.gridTemplateColumns = 
-                `repeat(auto-fill, minmax(${size}px, 1fr))`;
-            pywebview.api.set_grid_size(parseInt(size));
-        });
+        // document.getElementById('sizeSlider').addEventListener('input', (e) => {
+        //     const size = e.target.value;
+        //     document.getElementById('photoGrid').style.gridTemplateColumns = 
+        //         `repeat(auto-fill, minmax(${size}px, 1fr))`;
+        //     pywebview.api.set_grid_size(parseInt(size));
+        // });
 
         document.getElementById('viewModeDropdown').addEventListener('change', async (e) => {
             const mode = e.target.value;
