@@ -10,9 +10,9 @@ class VirtualPhotoGrid {
         this.visibleItems = new Map();
         this.scrollTop = 0;
         this.containerHeight = 0;
+        this.containerWidth = 0;
         
         this.viewport = null;
-        this.spacer = null;
         this.content = null;
         this.contextMenu = null;
         
@@ -20,34 +20,28 @@ class VirtualPhotoGrid {
     }
     
     init() {
-        this.container.innerHTML = '';
         this.container.style.overflow = 'auto';
         this.container.style.position = 'relative';
         
         this.viewport = document.createElement('div');
         this.viewport.style.position = 'relative';
         this.viewport.style.width = '100%';
-        
-        this.spacer = document.createElement('div');
-        this.spacer.style.position = 'absolute';
-        this.spacer.style.top = '0';
-        this.spacer.style.left = '0';
-        this.spacer.style.width = '1px';
-        this.spacer.style.height = '1px';
-        this.spacer.style.pointerEvents = 'none';
+        this.viewport.style.minHeight = '100px';
         
         this.content = document.createElement('div');
         this.content.className = 'photo-grid';
-        this.content.style.position = 'relative';
-        this.content.style.willChange = 'transform';
+        this.content.style.position = 'absolute';
+        this.content.style.top = '0';
+        this.content.style.left = '0';
+        this.content.style.width = '100%';
         
-        this.viewport.appendChild(this.spacer);
         this.viewport.appendChild(this.content);
+        this.container.innerHTML = '';
         this.container.appendChild(this.viewport);
         
         this.createContextMenu();
         
-        this.container.addEventListener('scroll', this.onScroll.bind(this), { passive: true });
+        this.container.addEventListener('scroll', () => this.onScroll(), { passive: true });
         
         const resizeObserver = new ResizeObserver(() => this.updateLayout());
         resizeObserver.observe(this.container);
@@ -85,15 +79,18 @@ class VirtualPhotoGrid {
     updateLayout() {
         if (this.allPhotos.length === 0) {
             this.content.innerHTML = '<div style="color: #a0a0a0; padding: 20px;">No photos found</div>';
+            this.viewport.style.height = '100px';
             return;
         }
         
+        this.content.innerHTML = '';
         this.containerHeight = this.container.clientHeight;
+        this.containerWidth = this.container.clientWidth - 56;
         
         const totalRows = Math.ceil(this.allPhotos.length / this.itemsPerRow);
         const totalHeight = totalRows * (this.itemHeight + this.gap);
         
-        this.spacer.style.height = totalHeight + 'px';
+        this.viewport.style.height = totalHeight + 'px';
         
         this.render();
     }
@@ -134,27 +131,23 @@ class VirtualPhotoGrid {
                 this.visibleItems.delete(index);
             }
         }
-        
-        const offsetY = startRow * rowHeight;
-        this.content.style.transform = `translateY(${offsetY}px)`;
     }
     
     createPhotoElement(index) {
         const photo = this.allPhotos[index];
         if (!photo) return;
         
+        const row = Math.floor(index / this.itemsPerRow);
+        const col = index % this.itemsPerRow;
+        const itemWidth = (this.containerWidth - (this.itemsPerRow - 1) * this.gap) / this.itemsPerRow;
+        
         const photoItem = document.createElement('div');
         photoItem.className = 'photo-item';
         photoItem.setAttribute('data-face-id', photo.face_id);
         photoItem.setAttribute('data-index', index);
         photoItem.style.position = 'absolute';
-        
-        const row = Math.floor(index / this.itemsPerRow);
-        const col = index % this.itemsPerRow;
-        const itemWidth = (this.container.clientWidth - (this.itemsPerRow - 1) * this.gap) / this.itemsPerRow;
-        
-        photoItem.style.left = col * (itemWidth + this.gap) + 'px';
-        photoItem.style.top = ((row - Math.floor(this.scrollTop / (this.itemHeight + this.gap)) + this.overscan) * (this.itemHeight + this.gap)) + 'px';
+        photoItem.style.left = (col * (itemWidth + this.gap)) + 'px';
+        photoItem.style.top = (row * (this.itemHeight + this.gap)) + 'px';
         photoItem.style.width = itemWidth + 'px';
         photoItem.style.height = this.itemHeight + 'px';
         
@@ -163,6 +156,7 @@ class VirtualPhotoGrid {
         img.style.width = '100%';
         img.style.height = '100%';
         img.style.objectFit = 'cover';
+        img.style.borderRadius = '8px';
         img.loading = 'lazy';
         img.src = photo.thumbnail;
         
@@ -226,7 +220,7 @@ class VirtualPhotoGrid {
         if (hasSelection && !isPhotoSelected) {
             window.selectedPhotos.add(photo.face_id);
             photoItem.classList.add('selected');
-            window.updateSelectionInfo();
+            if (window.updateSelectionInfo) window.updateSelectionInfo();
         }
         
         let menuHTML = '';
@@ -308,34 +302,36 @@ class VirtualPhotoGrid {
     }
     
     handleContextAction(action) {
-        if (action === 'make-primary') {
+        if (action === 'make-primary' && window.makePrimaryPhoto) {
             window.makePrimaryPhoto();
-        } else if (action === 'hide-photo') {
+        } else if (action === 'hide-photo' && window.hidePhotos) {
             window.hidePhotos();
-        } else if (action === 'unhide-photo') {
+        } else if (action === 'unhide-photo' && window.unhidePhotos) {
             window.unhidePhotos();
-        } else if (action === 'transfer-tag') {
+        } else if (action === 'transfer-tag' && window.openTransferDialog) {
             window.openTransferDialog();
         }
     }
     
     handlePhotoClick(e, photo, photoItem, index) {
         if (e.ctrlKey || e.metaKey) {
-            window.togglePhotoSelection(photo.face_id, index, photoItem);
+            if (window.togglePhotoSelection) {
+                window.togglePhotoSelection(photo.face_id, index, photoItem);
+            }
         } else if (e.shiftKey) {
-            if (window.lastSelectedIndex >= 0) {
+            if (window.lastSelectedIndex >= 0 && window.selectPhotoRange) {
                 window.selectPhotoRange(window.lastSelectedIndex, index);
-            } else {
+            } else if (window.selectedPhotos) {
                 window.selectedPhotos.add(photo.face_id);
                 photoItem.classList.add('selected');
                 window.lastSelectedIndex = index;
-                window.updateSelectionInfo();
+                if (window.updateSelectionInfo) window.updateSelectionInfo();
             }
         } else {
-            if (window.selectedPhotos?.size === 0) {
-                window.openLightbox(index);
+            if (window.selectedPhotos?.size === 0 || !window.selectedPhotos) {
+                if (window.openLightbox) window.openLightbox(index);
             } else {
-                window.clearSelection();
+                if (window.clearSelection) window.clearSelection();
             }
         }
     }
@@ -351,6 +347,7 @@ class VirtualPhotoGrid {
         if (this.contextMenu) {
             this.contextMenu.remove();
         }
+        this.container.innerHTML = '';
     }
 }
 
