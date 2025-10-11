@@ -475,7 +475,8 @@ class FaceDatabase:
             AND (ft.face_id IS NULL OR ft.is_manual = 0 OR ft.tag_name = ?)
         ''', (clustering_id, person_id, person_name))
         
-        count = cursor.fetchone()[0]
+        result = cursor.fetchone()
+        count = result[0] if result and result[0] is not None else 0
         
         if not person_name.startswith("Person ") and person_name != "Unmatched Faces":
             cursor.execute('''
@@ -488,7 +489,8 @@ class FaceDatabase:
                 AND ca.person_id != ?
             ''', (person_name, clustering_id, person_id))
             
-            manual_count = cursor.fetchone()[0]
+            result = cursor.fetchone()
+            manual_count = result[0] if result and result[0] is not None else 0
             count += manual_count
         
         return count
@@ -556,8 +558,9 @@ class FaceDatabase:
             AND ca.clustering_id = ?
             AND ca.person_id != ?
         ''', (person_name, clustering_id, person_id))
-        return cursor.fetchone()[0]
-
+        result = cursor.fetchone()
+        return result[0] if result and result[0] is not None else 0
+    
     def get_manual_photo_count(self, person_name: str) -> int:
         cursor = self.conn.cursor()
         cursor.execute('''

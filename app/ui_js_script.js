@@ -36,6 +36,7 @@ let people = [];
         function initVirtualGrid() {
             const container = document.querySelector('.photo-grid-container');
             const gridSize = parseInt(document.getElementById('sizeSlider').value) || 180;
+            const containerWidth = container.clientWidth - 56;
             
             if (virtualGrid) {
                 virtualGrid.destroy();
@@ -43,19 +44,29 @@ let people = [];
             
             virtualGrid = new VirtualPhotoGrid(container, {
                 itemHeight: gridSize,
-                itemsPerRow: Math.floor((container.clientWidth - 56) / (gridSize + 16)),
+                itemsPerRow: Math.max(1, Math.floor(containerWidth / (gridSize + 16))),
                 gap: 16,
                 overscan: 2
             });
         }
 
+
         document.getElementById('sizeSlider').addEventListener('input', (e) => {
-            const size = e.target.value;
-            pywebview.api.set_grid_size(parseInt(size));
+            const size = parseInt(e.target.value);
+            pywebview.api.set_grid_size(size);
             
-            if (virtualGrid && currentPerson) {
-                initVirtualGrid();
-                loadPhotos(currentPerson.clustering_id, currentPerson.id, true);
+            if (virtualGrid && lightboxPhotos.length > 0) {
+                const containerWidth = virtualGrid.container.clientWidth - 56;
+                const newItemsPerRow = Math.max(1, Math.floor(containerWidth / (size + 16)));
+                
+                virtualGrid.itemHeight = size;
+                virtualGrid.itemsPerRow = newItemsPerRow;
+                
+                for (const [index] of virtualGrid.visibleItems.entries()) {
+                    virtualGrid.updatePhotoPosition(index);
+                }
+                
+                virtualGrid.updateLayout();
             }
         });
 
@@ -172,10 +183,11 @@ let people = [];
                 selectedPhotos.add(photo.face_id);
             }
             
-            virtualGrid.render();
+            if (virtualGrid) {
+                virtualGrid.updateSelections();
+            }
             updateSelectionInfo();
         }
-
 
         function positionMenu(menu, button) {
             const buttonRect = button.getBoundingClientRect();
@@ -460,6 +472,7 @@ let people = [];
                 });
             });
         }
+
         async function selectPerson(person) {
             currentPerson = person;
             lightboxPhotos = [];
@@ -506,6 +519,12 @@ let people = [];
             } catch (error) {
                 console.error('Error loading photos:', error);
                 addLogEntry('ERROR loading photos: ' + error.toString());
+            }
+        }
+
+        async function reloadCurrentPhotos() {
+            if (currentPerson) {
+                await loadPhotos(currentPerson.clustering_id, currentPerson.id, true);
             }
         }
 
@@ -825,13 +844,6 @@ let people = [];
                 closeTransferDialog();
             }
         });
-
-        async function reloadCurrentPhotos() {
-            if (currentPerson) {
-                await loadPhotos(currentPerson.clustering_id, currentPerson.id, true);
-            }
-        }
-
 
         function updateStatusMessage(message) {
             document.getElementById('progressText').textContent = message;
@@ -1202,12 +1214,6 @@ let people = [];
             }
         });
 
-        // document.getElementById('sizeSlider').addEventListener('input', (e) => {
-        //     const size = e.target.value;
-        //     document.getElementById('photoGrid').style.gridTemplateColumns = 
-        //         `repeat(auto-fill, minmax(${size}px, 1fr))`;
-        //     pywebview.api.set_grid_size(parseInt(size));
-        // });
 
         document.getElementById('viewModeDropdown').addEventListener('change', async (e) => {
             const mode = e.target.value;

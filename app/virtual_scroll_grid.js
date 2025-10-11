@@ -11,10 +11,13 @@ class VirtualPhotoGrid {
         this.scrollTop = 0;
         this.containerHeight = 0;
         this.containerWidth = 0;
+        this.isRendering = false;
         
         this.viewport = null;
         this.content = null;
         this.contextMenu = null;
+        
+        this.scrollTimeout = null;
         
         this.init();
     }
@@ -34,6 +37,7 @@ class VirtualPhotoGrid {
         this.content.style.top = '0';
         this.content.style.left = '0';
         this.content.style.width = '100%';
+        this.content.style.pointerEvents = 'none';
         
         this.viewport.appendChild(this.content);
         this.container.innerHTML = '';
@@ -41,9 +45,18 @@ class VirtualPhotoGrid {
         
         this.createContextMenu();
         
-        this.container.addEventListener('scroll', () => this.onScroll(), { passive: true });
+        this.container.addEventListener('scroll', () => {
+            if (this.scrollTimeout) {
+                clearTimeout(this.scrollTimeout);
+            }
+            this.scrollTimeout = setTimeout(() => this.onScroll(), 16);
+        }, { passive: true });
         
-        const resizeObserver = new ResizeObserver(() => this.updateLayout());
+        const resizeObserver = new ResizeObserver(() => {
+            if (!this.isRendering) {
+                this.updateLayout();
+            }
+        });
         resizeObserver.observe(this.container);
     }
     
@@ -72,18 +85,26 @@ class VirtualPhotoGrid {
     
     setPhotos(photos) {
         this.allPhotos = photos;
+        
+        for (const [index, element] of this.visibleItems.entries()) {
+            element.remove();
+        }
         this.visibleItems.clear();
+        
         this.updateLayout();
     }
     
     updateLayout() {
         if (this.allPhotos.length === 0) {
-            this.content.innerHTML = '<div style="color: #a0a0a0; padding: 20px;">No photos found</div>';
+            this.content.innerHTML = '<div style="color: #a0a0a0; padding: 20px; pointer-events: auto;">No photos found</div>';
             this.viewport.style.height = '100px';
             return;
         }
         
-        this.content.innerHTML = '';
+        if (this.visibleItems.size === 0) {
+            this.content.innerHTML = '';
+        }
+        
         this.containerHeight = this.container.clientHeight;
         this.containerWidth = this.container.clientWidth - 56;
         
@@ -101,36 +122,60 @@ class VirtualPhotoGrid {
     }
     
     render() {
-        const scrollTop = this.scrollTop;
-        const viewportHeight = this.containerHeight;
+        if (this.isRendering || this.allPhotos.length === 0) return;
         
-        const rowHeight = this.itemHeight + this.gap;
+        this.isRendering = true;
         
-        const startRow = Math.max(0, Math.floor(scrollTop / rowHeight) - this.overscan);
-        const endRow = Math.min(
-            Math.ceil(this.allPhotos.length / this.itemsPerRow),
-            Math.ceil((scrollTop + viewportHeight) / rowHeight) + this.overscan
-        );
-        
-        const startIndex = startRow * this.itemsPerRow;
-        const endIndex = Math.min(this.allPhotos.length, endRow * this.itemsPerRow);
-        
-        const visibleSet = new Set();
-        
-        for (let i = startIndex; i < endIndex; i++) {
-            visibleSet.add(i);
+        requestAnimationFrame(() => {
+            const scrollTop = this.scrollTop;
+            const viewportHeight = this.containerHeight;
             
-            if (!this.visibleItems.has(i)) {
-                this.createPhotoElement(i);
+            const rowHeight = this.itemHeight + this.gap;
+            
+            const startRow = Math.max(0, Math.floor(scrollTop / rowHeight) - this.overscan);
+            const endRow = Math.min(
+                Math.ceil(this.allPhotos.length / this.itemsPerRow),
+                Math.ceil((scrollTop + viewportHeight) / rowHeight) + this.overscan
+            );
+            
+            const startIndex = startRow * this.itemsPerRow;
+            const endIndex = Math.min(this.allPhotos.length, endRow * this.itemsPerRow);
+            
+            const visibleSet = new Set();
+            
+            for (let i = startIndex; i < endIndex; i++) {
+                visibleSet.add(i);
+                
+                if (!this.visibleItems.has(i)) {
+                    this.createPhotoElement(i);
+                } else {
+                    this.updatePhotoPosition(i);
+                }
             }
-        }
+            
+            for (const [index, element] of this.visibleItems.entries()) {
+                if (!visibleSet.has(index)) {
+                    element.remove();
+                    this.visibleItems.delete(index);
+                }
+            }
+            
+            this.isRendering = false;
+        });
+    }
+    
+    updatePhotoPosition(index) {
+        const element = this.visibleItems.get(index);
+        if (!element) return;
         
-        for (const [index, element] of this.visibleItems.entries()) {
-            if (!visibleSet.has(index)) {
-                element.remove();
-                this.visibleItems.delete(index);
-            }
-        }
+        const row = Math.floor(index / this.itemsPerRow);
+        const col = index % this.itemsPerRow;
+        const itemWidth = (this.containerWidth - (this.itemsPerRow - 1) * this.gap) / this.itemsPerRow;
+        
+        element.style.left = (col * (itemWidth + this.gap)) + 'px';
+        element.style.top = (row * (this.itemHeight + this.gap)) + 'px';
+        element.style.width = itemWidth + 'px';
+        element.style.height = this.itemHeight + 'px';
     }
     
     createPhotoElement(index) {
@@ -150,6 +195,11 @@ class VirtualPhotoGrid {
         photoItem.style.top = (row * (this.itemHeight + this.gap)) + 'px';
         photoItem.style.width = itemWidth + 'px';
         photoItem.style.height = this.itemHeight + 'px';
+        photoItem.style.pointerEvents = 'auto';
+        
+        if (window.selectedPhotos?.has(photo.face_id)) {
+            photoItem.classList.add('selected');
+        }
         
         const img = document.createElement('img');
         img.className = 'photo-placeholder';
@@ -159,6 +209,7 @@ class VirtualPhotoGrid {
         img.style.borderRadius = '8px';
         img.loading = 'lazy';
         img.src = photo.thumbnail;
+        img.draggable = false;
         
         photoItem.appendChild(img);
         
@@ -181,6 +232,7 @@ class VirtualPhotoGrid {
     createKebabMenu(photo, photoItem, index) {
         const kebab = document.createElement('button');
         kebab.className = 'kebab-menu';
+        kebab.style.pointerEvents = 'auto';
         kebab.innerHTML = '<span class="kebab-dot"></span><span class="kebab-dot"></span><span class="kebab-dot"></span>';
         
         kebab.addEventListener('click', (e) => {
@@ -342,7 +394,21 @@ class VirtualPhotoGrid {
         }
     }
     
+    updateSelections() {
+        for (const [index, element] of this.visibleItems.entries()) {
+            const photo = this.allPhotos[index];
+            if (photo && window.selectedPhotos?.has(photo.face_id)) {
+                element.classList.add('selected');
+            } else {
+                element.classList.remove('selected');
+            }
+        }
+    }
+    
     destroy() {
+        for (const [index, element] of this.visibleItems.entries()) {
+            element.remove();
+        }
         this.visibleItems.clear();
         if (this.contextMenu) {
             this.contextMenu.remove();
