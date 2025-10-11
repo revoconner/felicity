@@ -15,7 +15,7 @@ def main():
     args = parser.parse_args()
     
     print("=" * 60)
-    print("Face Recognition Photo Organizer")
+    print("Face Recognition Photo Organizer (React Version)")
     print("=" * 60)
     print(f"PyTorch version: {torch.__version__}")
     print(f"CUDA available: {GPU_AVAILABLE}")
@@ -26,13 +26,6 @@ def main():
     
     settings_path = get_appdata_path()
     settings = Settings(str(settings_path))
-    
-    print(f"Settings loaded from: {settings.settings_file}")
-    print(f"Threshold: {settings.get('threshold')}%")
-    print(f"Include folders: {settings.get('include_folders')}")
-    print(f"Exclude folders: {settings.get('exclude_folders')}")
-    print(f"Wildcard exclusions: {settings.get('wildcard_exclusions')}")
-    print("=" * 60)
     
     api = API(settings)
     
@@ -52,7 +45,7 @@ def main():
     
     api.set_window(window)
     
-    webview.start(debug=False)
+    webview.start(debug=True)
     
     api.close()
 
