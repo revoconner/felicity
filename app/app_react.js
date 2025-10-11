@@ -124,8 +124,7 @@ const VirtualPhotoGrid = ({
                         onDoubleClick: () => onPhotoDoubleClick(photo),
                         style: {
                             position: 'relative',
-                            width: `${gridSize}px`,
-                            height: `${gridSize}px`,
+                            aspectRatio: '1',
                             borderRadius: '8px',
                             cursor: 'pointer',
                             boxShadow: '0 2px 8px rgba(0, 0, 0, 0.2)',
@@ -159,20 +158,16 @@ const VirtualPhotoGrid = ({
             );
         }),
         isLoading && React.createElement('div', {
+            id: 'loading-indicator',
             style: {
-                position: 'absolute',
-                bottom: '20px',
-                left: '50%',
-                transform: 'translateX(-50%)',
+                gridColumn: '1 / -1',
                 textAlign: 'center',
-                padding: '12px 24px',
-                backgroundColor: 'rgba(59, 130, 246, 0.1)',
-                borderRadius: '8px',
+                padding: '20px',
                 color: '#3b82f6',
                 fontSize: '13px',
                 fontWeight: '500'
             }
-        }, 'Loading more photos...')
+        }, `Loaded ${photos.length} photos`)
     );
 };
 
@@ -205,7 +200,27 @@ const ContextMenu = ({ x, y, items, onClose, onAction }) => {
     );
 };
 
-const Lightbox = ({ photos, currentIndex, onClose, onPrev, onNext, onOpenExternal }) => {
+const Lightbox = ({ photos, currentIndex, onClose, onPrev, onNext, onOpenExternal, showFaceTags }) => {
+    const [fullImage, setFullImage] = useState(null);
+    const [faceTags, setFaceTags] = useState([]);
+
+    useEffect(() => {
+        const loadFullImage = async () => {
+            const photo = photos[currentIndex];
+            const fullSize = await window.pywebview.api.get_full_size_preview(photo.path);
+            setFullImage(fullSize || photo.thumbnail);
+            
+            if (showFaceTags) {
+                const tags = await window.pywebview.api.get_photo_face_tags(photo.path);
+                if (tags.success) {
+                    setFaceTags(tags.faces);
+                }
+            }
+        };
+        
+        loadFullImage();
+    }, [currentIndex, photos, showFaceTags]);
+
     useEffect(() => {
         const handleKey = (e) => {
             if (e.key === 'Escape') onClose();
@@ -243,7 +258,15 @@ const Lightbox = ({ photos, currentIndex, onClose, onPrev, onNext, onOpenExterna
             className: 'lightbox-content',
             onClick: (e) => e.stopPropagation()
         },
-            React.createElement('img', { src: photo.thumbnail, alt: photo.name })
+            React.createElement('img', { 
+                src: fullImage || photo.thumbnail, 
+                alt: photo.name,
+                id: 'lightboxImage'
+            }),
+            React.createElement('div', { 
+                className: 'face-tags-overlay', 
+                id: 'faceTagsOverlay' 
+            })
         ),
         currentIndex < photos.length - 1 && React.createElement('button', {
             className: 'lightbox-nav lightbox-next',
@@ -269,13 +292,91 @@ const Lightbox = ({ photos, currentIndex, onClose, onPrev, onNext, onOpenExterna
     );
 };
 
-const SettingsDialog = ({ active, onClose, activePanel, setActivePanel }) => {
+const RenameDialog = ({ active, person, onClose, onConfirm }) => {
+    const [newName, setNewName] = useState('');
+    const inputRef = useRef(null);
+
+    useEffect(() => {
+        if (active && person) {
+            setNewName(person.name.replace(' (hidden)', ''));
+            setTimeout(() => {
+                if (inputRef.current) {
+                    inputRef.current.focus();
+                    inputRef.current.select();
+                }
+            }, 100);
+        }
+    }, [active, person]);
+
+    const handleConfirm = async () => {
+        if (!newName.trim()) return;
+        
+        const conflictCheck = await window.pywebview.api.check_name_conflict(
+            person.clustering_id,
+            person.id,
+            newName.trim()
+        );
+        
+        if (conflictCheck.has_conflict) {
+            onClose();
+            return;
+        }
+        
+        onConfirm(newName.trim());
+    };
+
+    const handleKeyDown = (e) => {
+        if (e.key === 'Enter') handleConfirm();
+        if (e.key === 'Escape') onClose();
+    };
+
+    if (!active) return null;
+
+    return React.createElement('div', {
+        className: 'cleanup-overlay active',
+        onClick: (e) => {
+            if (e.target.className === 'cleanup-overlay active') onClose();
+        }
+    },
+        React.createElement('div', { className: 'cleanup-message' },
+            React.createElement('div', { className: 'cleanup-title' }, 'Rename Person'),
+            React.createElement('div', { className: 'rename-input-container' },
+                React.createElement('input', {
+                    ref: inputRef,
+                    type: 'text',
+                    className: 'wildcard-input',
+                    id: 'renameInput',
+                    placeholder: 'Enter new name',
+                    value: newName,
+                    onChange: (e) => setNewName(e.target.value),
+                    onKeyDown: handleKeyDown
+                })
+            ),
+            React.createElement('div', { 
+                className: 'folder-controls', 
+                style: { justifyContent: 'center', marginTop: '24px' } 
+            },
+                React.createElement('button', {
+                    className: 'folder-btn',
+                    onClick: handleConfirm
+                }, React.createElement('span', null, 'Confirm')),
+                React.createElement('button', {
+                    className: 'folder-btn remove',
+                    onClick: onClose
+                }, React.createElement('span', null, 'Cancel'))
+            )
+        )
+    );
+};
+
+const SettingsDialog = ({ active, onClose, activePanel, setActivePanel, logEntries }) => {
     const [threshold, setThreshold] = useState(50);
     const [includeFolders, setIncludeFolders] = useState([]);
     const [excludeFolders, setExcludeFolders] = useState([]);
     const [selectedInclude, setSelectedInclude] = useState(null);
     const [selectedExclude, setSelectedExclude] = useState(null);
     const [wildcardInput, setWildcardInput] = useState('');
+    const [cacheSize, setCacheSize] = useState('Calculating...');
     const [settings, setSettings] = useState({
         closeToTray: true,
         dynamicResources: true,
@@ -313,6 +414,12 @@ const SettingsDialog = ({ active, onClose, activePanel, setActivePanel }) => {
         const scanFrequency = await window.pywebview.api.get_scan_frequency();
         const showFaceTagsPreview = await window.pywebview.api.get_show_face_tags_preview();
         
+        const stats = await window.pywebview.api.get_cache_stats();
+        const sizeText = stats.file_count > 0 
+            ? `${stats.size_mb} MB (${stats.file_count} files)`
+            : 'Cache empty';
+        setCacheSize(sizeText);
+        
         setThreshold(thresh);
         setIncludeFolders(incFolders);
         setExcludeFolders(excFolders);
@@ -327,6 +434,19 @@ const SettingsDialog = ({ active, onClose, activePanel, setActivePanel }) => {
     const handleRecalibrate = async () => {
         onClose();
         await window.pywebview.api.recalibrate(threshold);
+    };
+
+    const handleClearCache = async () => {
+        if (confirm('Clear all cached thumbnails? This will free up disk space but photos will need to be regenerated on next view.')) {
+            const stats = await window.pywebview.api.clear_thumbnail_cache();
+            setCacheSize('Cache empty');
+            alert(`Successfully cleared ${stats.size_mb} MB of cached thumbnails!`);
+        }
+    };
+
+    const handleSaveLog = async () => {
+        const logContent = logEntries.join('\n');
+        await window.pywebview.api.save_log(logContent);
     };
 
     const handleAddInclude = async () => {
@@ -466,7 +586,6 @@ const SettingsDialog = ({ active, onClose, activePanel, setActivePanel }) => {
                                         const val = e.target.checked;
                                         setSettings({...settings, showUnmatched: val});
                                         await window.pywebview.api.set_show_unmatched(val);
-                                        window.location.reload();
                                     }
                                 }),
                                 React.createElement('span', { className: 'toggle-slider' })
@@ -485,7 +604,6 @@ const SettingsDialog = ({ active, onClose, activePanel, setActivePanel }) => {
                                             const val = e.target.checked;
                                             setSettings({...settings, minPhotosEnabled: val});
                                             await window.pywebview.api.set_min_photos_enabled(val);
-                                            window.location.reload();
                                         }
                                     }),
                                     React.createElement('span', { className: 'toggle-slider' })
@@ -502,7 +620,6 @@ const SettingsDialog = ({ active, onClose, activePanel, setActivePanel }) => {
                                         if (val >= 0 && val <= 999) {
                                             setSettings({...settings, minPhotosCount: val});
                                             await window.pywebview.api.set_min_photos_count(val);
-                                            window.location.reload();
                                         }
                                     }
                                 }),
@@ -555,7 +672,6 @@ const SettingsDialog = ({ active, onClose, activePanel, setActivePanel }) => {
                                         const val = e.target.checked;
                                         setSettings({...settings, showHidden: val});
                                         await window.pywebview.api.set_show_hidden(val);
-                                        window.location.reload();
                                     }
                                 }),
                                 React.createElement('span', { className: 'toggle-slider' })
@@ -590,7 +706,6 @@ const SettingsDialog = ({ active, onClose, activePanel, setActivePanel }) => {
                                         const val = e.target.checked;
                                         setSettings({...settings, hideUnnamed: val});
                                         await window.pywebview.api.set_hide_unnamed_persons(val);
-                                        window.location.reload();
                                     }
                                 }),
                                 React.createElement('span', { className: 'toggle-slider' })
@@ -628,10 +743,24 @@ const SettingsDialog = ({ active, onClose, activePanel, setActivePanel }) => {
                                         const val = e.target.checked;
                                         setSettings({...settings, showDevOptions: val});
                                         await window.pywebview.api.set_show_dev_options(val);
-                                        window.location.reload();
                                     }
                                 }),
                                 React.createElement('span', { className: 'toggle-slider' })
+                            )
+                        ),
+                        React.createElement('div', { className: 'setting-row' },
+                            React.createElement('div', { className: 'setting-label' },
+                                React.createElement('span', null, 'Thumbnail Cache')
+                            ),
+                            React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: '12px' } },
+                                React.createElement('span', { 
+                                    id: 'cacheSize', 
+                                    style: { color: '#a0a0a0', fontSize: '13px' } 
+                                }, cacheSize),
+                                React.createElement('button', {
+                                    className: 'recalibrate-btn',
+                                    onClick: handleClearCache
+                                }, 'Clear Cache')
                             )
                         )
                     )
@@ -727,9 +856,17 @@ const SettingsDialog = ({ active, onClose, activePanel, setActivePanel }) => {
                     )
                 ),
                 activePanel === 'log' && React.createElement('div', { className: 'content-panel active' },
-                    React.createElement('div', { className: 'panel-title' }, 'View Log'),
+                    React.createElement('div', { className: 'log-header' },
+                        React.createElement('div', { className: 'panel-title' }, 'View Log'),
+                        React.createElement('button', {
+                            className: 'save-log-btn',
+                            onClick: handleSaveLog
+                        }, React.createElement('span', null, 'Save Log'))
+                    ),
                     React.createElement('div', { className: 'log-viewer', id: 'logViewer' },
-                        React.createElement('div', { className: 'log-entry' }, 'Application started')
+                        logEntries.map((entry, i) =>
+                            React.createElement('div', { key: i, className: 'log-entry' }, entry)
+                        )
                     )
                 )
             )
@@ -750,6 +887,7 @@ const App = () => {
     const [lightbox, setLightbox] = useState(null);
     const [settingsOpen, setSettingsOpen] = useState(false);
     const [activeSettingsPanel, setActiveSettingsPanel] = useState('general');
+    const [renameDialog, setRenameDialog] = useState(null);
     const [isLoadingMore, setIsLoadingMore] = useState(false);
     const [hasMorePhotos, setHasMorePhotos] = useState(true);
     const [currentPage, setCurrentPage] = useState(1);
@@ -764,6 +902,9 @@ const App = () => {
         cuda: 'CUDA: N/A',
         faces: 'Found: 0 faces'
     });
+    const [logEntries, setLogEntries] = useState(['[' + new Date().toLocaleString() + '] Application started']);
+    const [showDevOptions, setShowDevOptions] = useState(false);
+    const [showFaceTagsPreview, setShowFaceTagsPreview] = useState(true);
     
     const gridContainerRef = useRef(null);
 
@@ -786,7 +927,8 @@ const App = () => {
             };
             
             window.hideProgress = () => {
-                setProgressInfo({...progressInfo, visible: false});
+                setProgressInfo(prev => ({...prev, visible: false}));
+                updateFaceCount();
                 loadPeople();
             };
             
@@ -796,16 +938,18 @@ const App = () => {
     }, []);
 
     const addLogEntry = (message) => {
-        const logViewer = document.getElementById('logViewer');
-        if (logViewer) {
-            const now = new Date();
-            const timestamp = now.toLocaleString();
-            const entry = document.createElement('div');
-            entry.className = 'log-entry';
-            entry.textContent = `[${timestamp}] ${message}`;
-            logViewer.appendChild(entry);
-            logViewer.scrollTop = logViewer.scrollHeight;
-        }
+        const now = new Date();
+        const timestamp = now.toLocaleString();
+        const entry = `[${timestamp}] ${message}`;
+        setLogEntries(prev => [...prev, entry]);
+    };
+
+    const updateFaceCount = async () => {
+        const info = await window.pywebview.api.get_system_info();
+        setStatusInfo(prev => ({
+            ...prev,
+            faces: `Found: ${info.total_faces} faces`
+        }));
     };
 
     const loadSystemInfo = async () => {
@@ -822,19 +966,19 @@ const App = () => {
         const gridSizeValue = await window.pywebview.api.get_grid_size();
         const viewModeValue = await window.pywebview.api.get_view_mode();
         const sortModeValue = await window.pywebview.api.get_sort_mode();
+        const showDevOpts = await window.pywebview.api.get_show_dev_options();
+        const showFaceTags = await window.pywebview.api.get_show_face_tags_preview();
         
         setGridSize(gridSizeValue);
         setViewMode(viewModeValue);
         setSortMode(sortModeValue);
+        setShowDevOptions(showDevOpts);
+        setShowFaceTagsPreview(showFaceTags);
     };
 
     const loadPeople = async () => {
         const peopleData = await window.pywebview.api.get_people();
         setPeople(peopleData);
-        if (peopleData.length > 0 && !currentPerson) {
-            const firstPerson = peopleData.find(p => p.id !== 0) || peopleData[0];
-            selectPerson(firstPerson);
-        }
     };
 
     const selectPerson = async (person) => {
@@ -881,13 +1025,12 @@ const App = () => {
             setAllPhotos([]);
             setCurrentPage(1);
             setHasMorePhotos(true);
+            setSelectedPhotos(new Set());
             await loadPhotos(currentPerson, 1, true);
         }
     };
 
-    const visiblePhotos = useMemo(() => {
-        return allPhotos;
-    }, [allPhotos]);
+    const visiblePhotos = useMemo(() => allPhotos, [allPhotos]);
 
     const sortedPeople = useMemo(() => {
         const sorted = [...people];
@@ -977,13 +1120,18 @@ const App = () => {
     };
 
     const handlePersonKebabClick = (e, person) => {
-        const items = person.is_hidden ? [
-            { label: 'Rename', action: 'rename', data: person },
-            { label: 'Unhide person', action: 'unhide_person', data: person }
-        ] : [
-            { label: 'Rename', action: 'rename', data: person },
-            { label: 'Hide person', action: 'hide_person', data: person }
-        ];
+        const items = [];
+        items.push({ label: 'Rename', action: 'rename', data: person });
+        
+        if (showDevOptions) {
+            items.push({ label: 'Remove all tags', action: 'untag', data: person });
+        }
+        
+        if (person.is_hidden) {
+            items.push({ label: 'Unhide person', action: 'unhide_person', data: person });
+        } else {
+            items.push({ label: 'Hide person', action: 'hide_person', data: person });
+        }
         
         const rect = e.currentTarget.getBoundingClientRect();
         setContextMenu({
@@ -1019,14 +1167,28 @@ const App = () => {
             return;
         }
         
+        if (action === 'rename') {
+            setRenameDialog(data);
+            return;
+        }
+        
+        if (action === 'untag') {
+            await window.pywebview.api.untag_person(data.clustering_id, data.id);
+            addLogEntry(`Removed all tags from ${data.name}`);
+            loadPeople();
+            return;
+        }
+        
         if (action === 'hide_person') {
             await window.pywebview.api.hide_person(data.clustering_id, data.id);
+            addLogEntry(`Hidden person: ${data.name}`);
             loadPeople();
             return;
         }
         
         if (action === 'unhide_person') {
             await window.pywebview.api.unhide_person(data.clustering_id, data.id);
+            addLogEntry(`Unhidden person: ${data.name}`);
             loadPeople();
             return;
         }
@@ -1036,12 +1198,14 @@ const App = () => {
         switch(action) {
             case 'primary':
                 await window.pywebview.api.set_primary_photo(currentPerson.name, data.face_id);
+                addLogEntry(`Set primary photo for ${currentPerson.name}`);
                 loadPeople();
                 break;
             case 'hide':
                 for (const faceId of faceIds) {
                     await window.pywebview.api.hide_photo(faceId);
                 }
+                addLogEntry(`Hidden ${faceIds.length} photo(s)`);
                 clearSelection();
                 await reloadCurrentPhotos();
                 break;
@@ -1049,9 +1213,29 @@ const App = () => {
                 for (const faceId of faceIds) {
                     await window.pywebview.api.unhide_photo(faceId);
                 }
+                addLogEntry(`Unhidden ${faceIds.length} photo(s)`);
                 clearSelection();
                 await reloadCurrentPhotos();
                 break;
+        }
+    };
+
+    const handleRenameConfirm = async (newName) => {
+        if (!renameDialog) return;
+        
+        const result = await window.pywebview.api.rename_person(
+            renameDialog.clustering_id,
+            renameDialog.id,
+            newName
+        );
+        
+        if (result.success) {
+            addLogEntry(`Renamed person to "${newName}" - ${result.faces_tagged} faces tagged`);
+            setRenameDialog(null);
+            loadPeople();
+        } else {
+            addLogEntry(`ERROR: ${result.message}`);
+            setRenameDialog(null);
         }
     };
 
@@ -1281,7 +1465,15 @@ const App = () => {
             active: settingsOpen,
             onClose: () => setSettingsOpen(false),
             activePanel: activeSettingsPanel,
-            setActivePanel: setActiveSettingsPanel
+            setActivePanel: setActiveSettingsPanel,
+            logEntries: logEntries
+        }),
+        
+        React.createElement(RenameDialog, {
+            active: !!renameDialog,
+            person: renameDialog,
+            onClose: () => setRenameDialog(null),
+            onConfirm: handleRenameConfirm
         }),
         
         contextMenu && React.createElement(ContextMenu, {
@@ -1298,7 +1490,8 @@ const App = () => {
             onClose: () => setLightbox(null),
             onPrev: () => setLightbox(prev => ({ currentIndex: Math.max(0, prev.currentIndex - 1) })),
             onNext: () => setLightbox(prev => ({ currentIndex: Math.min(visiblePhotos.length - 1, prev.currentIndex + 1) })),
-            onOpenExternal: () => window.pywebview.api.open_photo(visiblePhotos[lightbox.currentIndex].path)
+            onOpenExternal: () => window.pywebview.api.open_photo(visiblePhotos[lightbox.currentIndex].path),
+            showFaceTags: showFaceTagsPreview
         })
     );
 };
