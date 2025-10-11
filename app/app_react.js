@@ -1,49 +1,6 @@
 const { useState, useEffect, useRef, useMemo, useCallback } = React;
 const { createRoot } = ReactDOM;
-
-const useSimpleVirtualizer = ({ count, estimateSize, getScrollElement, overscan = 2 }) => {
-    const [scrollTop, setScrollTop] = useState(0);
-    const [containerHeight, setContainerHeight] = useState(0);
-    
-    useEffect(() => {
-        const element = getScrollElement();
-        if (!element) return;
-        
-        const handleScroll = () => setScrollTop(element.scrollTop);
-        const handleResize = () => setContainerHeight(element.clientHeight);
-        
-        handleResize();
-        element.addEventListener('scroll', handleScroll, { passive: true });
-        window.addEventListener('resize', handleResize);
-        
-        return () => {
-            element.removeEventListener('scroll', handleScroll);
-            window.removeEventListener('resize', handleResize);
-        };
-    }, [getScrollElement]);
-    
-    const itemSize = estimateSize();
-    const totalSize = count * itemSize;
-    
-    const startIndex = Math.max(0, Math.floor(scrollTop / itemSize) - overscan);
-    const endIndex = Math.min(count - 1, Math.ceil((scrollTop + containerHeight) / itemSize) + overscan);
-    
-    const virtualItems = [];
-    for (let i = startIndex; i <= endIndex; i++) {
-        virtualItems.push({
-            key: i,
-            index: i,
-            start: i * itemSize,
-            size: itemSize
-        });
-    }
-    
-    return {
-        getVirtualItems: () => virtualItems,
-        getTotalSize: () => totalSize,
-        range: { startIndex, endIndex }
-    };
-};
+const { useVirtualizer } = window.TanStackReactVirtual || window.ReactVirtual || {};
 
 const PersonColors = [
     '#667eea', '#f093fb', '#4facfe', '#43e97b', '#fa709a',
@@ -85,7 +42,7 @@ const VirtualPhotoGrid = ({
         return () => resizeObserver.disconnect();
     }, [gridSize, containerRef]);
 
-    const rowVirtualizer = useSimpleVirtualizer({
+    const rowVirtualizer = useVirtualizer({
         count: Math.ceil(photos.length / columns),
         getScrollElement: () => containerRef.current,
         estimateSize: () => gridSize + 16,
@@ -102,7 +59,7 @@ const VirtualPhotoGrid = ({
         if (lastItem.index >= totalRows - 2 && hasMore && !isLoading) {
             onLoadMore();
         }
-    }, [rowVirtualizer.getVirtualItems().length, hasMore, isLoading, columns, photos.length]);
+    }, [rowVirtualizer.getVirtualItems(), hasMore, isLoading, columns, photos.length]);
 
     return (
         <div
