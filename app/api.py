@@ -8,7 +8,6 @@ from typing import Optional, List
 from io import BytesIO
 from PIL import Image, ImageOps
 import torch
-import webview
 import pystray
 from pystray import MenuItem as item
 
@@ -43,21 +42,8 @@ class API:
 
     def set_window(self, window):
         self._window = window
-        self._setup_window_events()
         if self._close_to_tray:
             self._setup_tray()
-    
-    def _setup_window_events(self):
-        def on_closing():
-            if self._quit_flag:
-                return False
-            if self._close_to_tray:
-                self._window.hide()
-                self._window_foreground = False
-                return True
-            return False
-        
-        self._window.events.closing += on_closing
     
     def _setup_tray(self):
         if self._tray_icon:
@@ -70,33 +56,18 @@ class API:
             
             if self._window:
                 try:
-                    self._window.evaluate_js("showCleanupMessage()")
+                    self._window.quit()
                 except:
                     pass
             
-            try:
-                for win in webview.windows:
-                    print(f"Destroying window from tray: {win}")
-                    win.destroy()
-            except Exception as e:
-                print(f"Error destroying windows from tray: {e}")
-            
-            import threading
-            def force_exit():
-                import time
-                time.sleep(0.5)
-                print("Force exiting from tray")
-                import os
-                os._exit(0)
-            
-            exit_thread = threading.Thread(target=force_exit, daemon=True)
-            exit_thread.start()
+            import os
+            os._exit(0)
         
         def on_restore(icon=None, item=None):
             if self._window:
                 try:
-                    self._window.restore()
-                    self._window.show()
+                    self._window.deiconify()
+                    self._window.lift()
                     self._window_foreground = True
                 except Exception as e:
                     print(f"Error restoring window: {e}")
@@ -122,13 +93,12 @@ class API:
     
     def update_status(self, message: str):
         if self._window:
-            safe_message = message.replace('"', '\\"').replace('\n', ' ')
-            self._window.evaluate_js(f'updateStatusMessage("{safe_message}")')
+            self._window.update_status(message)
     
     def update_progress(self, current: int, total: int):
         if self._window:
             percent = (current / total) * 100 if total > 0 else 0
-            self._window.evaluate_js(f'updateProgress({current}, {total}, {percent})')
+            self._window.update_progress(current, total, percent)
 
     def get_cache_stats(self):
         return self._thumbnail_cache.get_cache_size()
@@ -136,7 +106,7 @@ class API:
     def clear_thumbnail_cache(self):
         stats = self._thumbnail_cache.clear_cache()
         if self._window:
-            self._window.evaluate_js('loadPeople()')
+            self._window.load_people()
         return stats
     
     def scan_complete(self):
@@ -175,8 +145,8 @@ class API:
     
     def cluster_complete(self):
         if self._window:
-            self._window.evaluate_js('hideProgress()')
-            self._window.evaluate_js('loadPeople()')
+            self._window.hide_progress()
+            self._window.load_people()
     
     def get_system_info(self):
         GPU_AVAILABLE = torch.cuda.is_available()
@@ -299,9 +269,6 @@ class API:
     def transfer_face_to_person(self, clustering_id, face_id, target_name):
         try:
             self._db.transfer_face_to_person(clustering_id, face_id, target_name)
-            if self._window:
-                self._window.evaluate_js('loadPeople()')
-                self._window.evaluate_js('reloadCurrentPhotos()')
             return {'success': True, 'message': f'Face transferred to {target_name}'}
         except Exception as e:
             print(f"Error in transfer_face_to_person: {e}")
@@ -312,9 +279,6 @@ class API:
     def remove_face_to_unmatched(self, clustering_id, face_id):
         try:
             self._db.move_face_to_unmatched(clustering_id, face_id)
-            if self._window:
-                self._window.evaluate_js('loadPeople()')
-                self._window.evaluate_js('reloadCurrentPhotos()')
             return {'success': True, 'message': 'Face moved to Unmatched Faces'}
         except Exception as e:
             print(f"Error in remove_face_to_unmatched: {e}")
@@ -330,24 +294,16 @@ class API:
         
     def hide_person(self, clustering_id, person_id):
         self._db.hide_person(clustering_id, person_id)
-        if self._window:
-            self._window.evaluate_js('loadPeople()')
     
     def unhide_person(self, clustering_id, person_id):
         self._db.unhide_person(clustering_id, person_id)
-        if self._window:
-            self._window.evaluate_js('loadPeople()')
     
     def hide_photo(self, face_id):
         self._db.hide_photo(face_id)
-        if self._window:
-            self._window.evaluate_js('reloadCurrentPhotos()')
         return {'success': True}
     
     def unhide_photo(self, face_id):
         self._db.unhide_photo(face_id)
-        if self._window:
-            self._window.evaluate_js('reloadCurrentPhotos()')
         return {'success': True}
     
     def check_name_conflict(self, clustering_id, person_id, new_name):
@@ -406,14 +362,12 @@ class API:
         print(f"clustering_id: {clustering_id}")
         print(f"person_id: {person_id}")
         print(f"new_name: {new_name}")
-        print(f"new_name type: {type(new_name)}")
         
         if not new_name or not new_name.strip():
             print("ERROR: Name is empty")
             return {'success': False, 'message': 'Name cannot be empty'}
         
         new_name = new_name.strip()
-        print(f"Trimmed name: {new_name}")
         
         face_ids = self._db.get_face_ids_for_person(clustering_id, person_id, limit=10000)
         print(f"Found {len(face_ids)} face IDs to tag")
@@ -422,15 +376,8 @@ class API:
             print("ERROR: No faces found")
             return {'success': False, 'message': 'No faces found for this person'}
         
-        print(f"Calling tag_faces with name: {new_name}")
         self._db.tag_faces(face_ids, new_name, is_manual=True)
-        print("tag_faces completed")
         
-        if self._window:
-            print("Calling loadPeople() via evaluate_js")
-            self._window.evaluate_js('loadPeople()')
-        
-        print(f"Returning success with {len(face_ids)} faces tagged")
         return {'success': True, 'faces_tagged': len(face_ids)}
     
     def untag_person(self, clustering_id, person_id):
@@ -441,9 +388,6 @@ class API:
         
         self._db.untag_faces(face_ids)
         
-        if self._window:
-            self._window.evaluate_js('loadPeople()')
-        
         return {'success': True, 'faces_untagged': len(face_ids)}
     
     def set_primary_photo(self, tag_name, face_id):
@@ -452,8 +396,6 @@ class API:
                 return {'success': False, 'message': 'Please name this person before setting a primary photo'}
             
             self._db.set_primary_photo_for_tag(tag_name, face_id)
-            if self._window:
-                self._window.evaluate_js('loadPeople()')
             return {'success': True, 'message': 'Primary photo set successfully'}
         except Exception as e:
             return {'success': False, 'message': str(e)}
@@ -506,7 +448,6 @@ class API:
     def get_full_size_preview(self, image_path: str) -> Optional[str]:
         try:
             img = Image.open(image_path)
-            
             img = ImageOps.exif_transpose(img)
             
             max_size = 1200
@@ -528,7 +469,6 @@ class API:
         
         try:
             img = Image.open(image_path)
-            
             img = ImageOps.exif_transpose(img)
             
             if bbox is not None:
@@ -560,16 +500,6 @@ class API:
         except Exception as e:
             return {'success': False, 'message': str(e)}
     
-    
-    def remove_face_permanently(self, face_id):
-        try:
-            self._db.hide_photo(face_id)
-            if self._window:
-                self._window.evaluate_js('reloadCurrentPhotos()')
-            return {'success': True, 'message': 'Face removed from this person'}
-        except Exception as e:
-            return {'success': False, 'message': str(e)}
-    
     def open_photo(self, path):
         try:
             if sys.platform == 'win32':
@@ -580,34 +510,6 @@ class API:
                 os.system(f'xdg-open "{path}"')
         except Exception as e:
             print(f"Error opening photo: {e}")
-    
-    def save_log(self, log_content):
-        try:
-            import tkinter as tk
-            from tkinter import filedialog
-            
-            root = tk.Tk()
-            root.withdraw()
-            root.attributes('-topmost', True)
-            
-            file_path = filedialog.asksaveasfilename(
-                title="Save Log File",
-                defaultextension=".txt",
-                filetypes=[("Text files", "*.txt"), ("All files", "*.*")],
-                initialfile="face_recognition_log.txt"
-            )
-            
-            root.destroy()
-            
-            if file_path:
-                with open(file_path, 'w', encoding='utf-8') as f:
-                    f.write(log_content)
-                return {'success': True, 'path': file_path}
-            else:
-                return {'success': False, 'message': 'Save cancelled'}
-                
-        except Exception as e:
-            return {'success': False, 'message': str(e)}
     
     def check_initial_state(self):
         total_faces = self._db.get_total_faces()
@@ -672,10 +574,6 @@ class API:
     def set_dynamic_resources(self, enabled):
         self._dynamic_resources = enabled
         self._settings.set('dynamic_resources', enabled)
-        if enabled:
-            self.update_status("Dynamic resource management enabled - will throttle when in background")
-        else:
-            self.update_status("Dynamic resource management disabled - full speed always")
     
     def get_show_unmatched(self):
         return self._settings.get('show_unmatched', False)
@@ -742,8 +640,6 @@ class API:
     
     def set_view_mode(self, mode):
         self._settings.set('view_mode', mode)
-        if self._window:
-            self._window.evaluate_js('reloadCurrentPhotos()')
     
     def get_sort_mode(self):
         return self._settings.get('sort_mode', 'names_asc')
@@ -751,34 +647,8 @@ class API:
     def set_sort_mode(self, mode):
         self._settings.set('sort_mode', mode)
     
-    def select_folder(self):
-        try:
-            result = self._window.create_file_dialog(webview.FOLDER_DIALOG)
-            if result and len(result) > 0:
-                return result[0]
-            return None
-        except Exception as e:
-            print(f"Error selecting folder: {e}")
-            return None
-    
     def is_window_foreground(self):
         return self._window_foreground
-    
-    def set_window_foreground(self, foreground):
-        self._window_foreground = foreground
-    
-    def minimize_window(self):
-        if self._window:
-            if self._close_to_tray:
-                self._window.hide()
-                self._window_foreground = False
-            else:
-                self._window.minimize()
-                self._window_foreground = False
-    
-    def maximize_window(self):
-        if self._window:
-            self._window.toggle_fullscreen()
     
     def close_window(self):
         print(f"close_window called: close_to_tray={self._close_to_tray}, quit_flag={self._quit_flag}")
@@ -786,20 +656,16 @@ class API:
         if self._close_to_tray and not self._quit_flag:
             print("Hiding window to tray")
             if self._window:
-                self._window.hide()
+                self._window.withdraw()
                 self._window_foreground = False
         else:
             print("Attempting to close application")
             self._quit_flag = True
             
-            if self._window:
-                self._window.evaluate_js("showCleanupMessage()")
-            
             if self._tray_icon:
                 print("Stopping tray icon")
                 try:
                     self._tray_icon.stop()
-                    print("Tray icon stopped")
                 except Exception as e:
                     print(f"Error stopping tray icon: {e}")
                 self._tray_icon = None
@@ -807,74 +673,12 @@ class API:
             if self._window:
                 print("Destroying window")
                 try:
-                    for win in webview.windows:
-                        print(f"Destroying window: {win}")
-                        win.destroy()
-                    print("All windows destroyed")
+                    self._window.quit()
                 except Exception as e:
-                    print(f"Error destroying windows: {e}")
-                    import traceback
-                    traceback.print_exc()
+                    print(f"Error destroying window: {e}")
             
-            import threading
-            def force_exit():
-                import time
-                time.sleep(0.5)
-                print("Force exiting application")
-                import os
-                os._exit(0)
-            
-            exit_thread = threading.Thread(target=force_exit, daemon=True)
-            exit_thread.start()
-
-    def get_photo_face_tags(self, photo_path: str):
-        """Get face tags for a photo with preview-scaled coordinates"""
-        try:
-            photo_id = self._db.get_photo_id(photo_path)
-            if not photo_id:
-                return {'success': False, 'faces': []}
-            
-            faces = self._db.get_photo_face_tags(photo_id)
-            
-            img = Image.open(photo_path)
-            img = ImageOps.exif_transpose(img)
-            
-            original_width = img.width
-            original_height = img.height
-            
-            max_size = 1200
-            img.thumbnail((max_size, max_size), Image.Resampling.LANCZOS)
-            
-            preview_width = img.width
-            preview_height = img.height
-            
-            scale_x = preview_width / original_width
-            scale_y = preview_height / original_height
-            
-            tagged_faces = []
-            for face in faces:
-                if face['tag_name']:
-                    tagged_faces.append({
-                        'face_id': face['face_id'],
-                        'bbox_x1': face['bbox_x1'] * scale_x,
-                        'bbox_y1': face['bbox_y1'] * scale_y,
-                        'bbox_x2': face['bbox_x2'] * scale_x,
-                        'bbox_y2': face['bbox_y2'] * scale_y,
-                        'tag_name': face['tag_name']
-                    })
-            
-            return {'success': True, 'faces': tagged_faces}
-        except Exception as e:
-            print(f"Error getting photo face tags: {e}")
-            import traceback
-            traceback.print_exc()
-            return {'success': False, 'faces': []}
-
-    def get_show_face_tags_preview(self):
-        return self._settings.get('show_face_tags_preview', True)
-
-    def set_show_face_tags_preview(self, enabled):
-        self._settings.set('show_face_tags_preview', enabled)
+            import os
+            os._exit(0)
     
     def close(self):
         if self._tray_icon:

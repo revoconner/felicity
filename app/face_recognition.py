@@ -1,10 +1,10 @@
 import argparse
 import torch
-import webview
 
-from utils import get_resource_path, get_appdata_path
+from utils import get_appdata_path
 from settings import Settings
 from api import API
+from main_window import MainWindow
 
 GPU_AVAILABLE = torch.cuda.is_available()
 
@@ -36,23 +36,12 @@ def main():
     
     api = API(settings)
     
-    ui_html_path = get_resource_path('ui.html')
+    app = MainWindow(api)
     
-    window = webview.create_window(
-        'Face Recognition Photo Organizer',
-        ui_html_path,
-        js_api=api,
-        width=settings.get('window_width', 1200),
-        height=settings.get('window_height', 800),
-        resizable=True,
-        frameless=True,
-        easy_drag=False,
-        hidden=args.minimized
-    )
+    if args.minimized:
+        app.withdraw()
     
-    api.set_window(window)
-    
-    webview.start(debug=False)
+    app.mainloop()
     
     api.close()
 
